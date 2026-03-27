@@ -1,53 +1,101 @@
-# =========================
-# KPI 계산 모듈
-# =========================
-
 import numpy as np
+from storage import prev_objects
+from decision import assign_car
+
+# =========================
+# 기본 계산
+# =========================
+
+def calc_distance(o):
+    return np.sqrt(o.x**2 + o.y**2 + o.z**2)
+
+def calc_speed(curr, prev):
+    dt = curr.timestamp - prev["timestamp"]
+
+    if dt <= 0:
+        return 0
+
+    dx = curr.x - prev["x"]
+    dy = curr.y - prev["y"]
+    dz = curr.z - prev["z"]
+
+    return np.sqrt(dx**2 + dy**2 + dz**2) / dt
 
 
-def process_data(data):
-    """
-    Ubuntu에서 받은 데이터(JSON)를 기반으로
-    KPI 계산 수행
-    """
+def calc_object_distance(o1, o2):
+    return np.sqrt(
+        (o1.x - o2.x)**2 +
+        (o1.y - o2.y)**2 +
+        (o1.z - o2.z)**2
+    )
 
-    objects = data.get("objects", [])
-    pointcloud = data.get("pointcloud", [])
 
-    # =========================
-    # 1. 객체 수 (Queue Length)
-    # =========================
-    num_objects = len(objects)
+def calc_volume(o):
+    return o.width * o.height * o.depth
 
-    # =========================
-    # 2. 평균 거리
-    # =========================
-    distances = [obj["distance"] for obj in objects if obj["distance"] > 0]
 
-    if len(distances) > 0:
-        avg_distance = np.mean(distances)
-    else:
-        avg_distance = 0
+# =========================
+# 메인 처리
+# =========================
 
-    # =========================
-    # 3. Point Cloud 밀도
-    # =========================
-    # 간단히: 점 개수 기반
-    density = len(pointcloud)
+def process_frame(data):
 
-    # =========================
-    # 4. 병목 점수 (간단 모델)
-    # =========================
-    # 객체 많고 거리 가까울수록 위험
+    object_results = []
 
-    bottleneck_score = 0
+    # -------------------------
+    # 객체별 처리
+    # -------------------------
+    for obj in data.objects:
 
-    if num_objects > 0:
-        bottleneck_score = (num_objects * 0.5) + (1 / (avg_distance + 0.1))
+        result = {}
+        result["id"] = obj.id
+
+        # 거리
+        distance = calc_distance(obj)
+        result["distance"] = distance
+
+        # 속도
+        if obj.id in prev_objects:
+            speed = calc_speed(obj, prev_objects[obj.id])
+        else:
+            speed = 0
+
+        result["speed"] = speed
+
+        # 소요 시간 (distance / speed)
+        if speed > 0:
+            result["eta"] = distance / speed
+        else:
+            result["eta"] = None
+
+        # 부피
+        volume = calc_volume(obj)
+        result["volume"] = volume
+
+        # RC카 배정
+        result["rc_car"] = assign_car(volume)
+
+        # 저장
+        prev_objects[obj.id] = obj.dict()
+
+        object_results.append(result)
+
+    # -------------------------
+    # 객체 간 거리
+    # -------------------------
+    pair_distances = []
+
+    for i in range(len(data.objects)):
+        for j in range(i + 1, len(data.objects)):
+
+            d = calc_object_distance(data.objects[i], data.objects[j])
+
+            pair_distances.append({
+                "pair": [data.objects[i].id, data.objects[j].id],
+                "distance": d
+            })
 
     return {
-        "num_objects": num_objects,
-        "avg_distance": float(avg_distance),
-        "density": density,
-        "bottleneck_score": float(bottleneck_score)
+        "objects": object_results,
+        "object_distances": pair_distances
     }
